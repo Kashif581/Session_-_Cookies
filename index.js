@@ -7,6 +7,8 @@ import bcrypt from "bcrypt";
 import session from "express-session";
 //
 import passport from "passport";
+// local strategy
+import { Strategy } from "passport-local";
 
 const app = express();
 const port = 3000;
@@ -22,7 +24,10 @@ app.use(session({
   // wether we want to save the session in datastore (database)
   resave: false,
   // this will save the uninitialized session into server memory
-  saveUninitialized: true
+  saveUninitialized: true,
+  cookie: {
+    maxAge: 1000 * 60 * 60 * 24
+  }
 }))
 
 // it's really important that your passport module goes after your session initialization
@@ -81,11 +86,14 @@ app.post("/register", async (req, res) => {
               console.log("Error hashing password", err)
             } else {
               const result = await db.query(
-                "INSERT INTO users (email, password) VALUES ($1, $2)",
+                "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
                 [email, hash]
               );
-              console.log(result);
-              res.render("secrets.ejs");
+              const user = result.rows[0];
+              req.login(user, (err) => {
+                console.log(err)
+                res.redirect("/secrets")
+              })
             }
 
           })
@@ -98,42 +106,52 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post("/login", async (req, res) => {
-  const email = req.body.username;
-  const loginpassword = req.body.password;
+app.post("/login", passport.authenticate("local", {
+  successRedirect: "/secrets",
+  failureRedirect: "/login"
+}));
+
+//
+passport.use(new Strategy(async function verify(username, password, cb) {
+  console.log(username)
+  console.log(password)
 
   try {
     const result = await db.query("SELECT * FROM users WHERE email = $1", [
-      email,
+      username,
     ]);
     if (result.rows.length > 0) {
       const user = result.rows[0];
       const storedHashedPassword = user.password;
       
       // order matters here (loginpassword, storedHashedpassword)
-      bcrypt.compare(loginpassword, storedHashedPassword, (err, result) => {
+      bcrypt.compare(password, storedHashedPassword, (err, result) => {
         if (err) {
-          console.log(err)
+          return cb(err)
         } else {
           if (result) {
-            res.render("secrets.ejs")
+            return cb(null, user)
           } else {
-            res.send("User not found")
+            return cb(null, false)
           }
-        }
-      }) 
-      if (password === storedPassword) {
-        res.render("secrets.ejs");
-      } else {
-        res.send("Incorrect Password");
-      }
-    } else {
-      res.send("User not found");
-    }
-  } catch (err) {
-    console.log(err);
+        } 
+    });
+  } else {
+    return cb("User not found")
   }
-});
+  } catch (err) {
+    return cb(err)
+
+  }     
+}));
+
+passport.serializeUser((user, cb)=>{
+  cb (null, user)
+})
+
+passport.deserializeUser((user, cb)=>{
+  cb (null, user)
+})
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
